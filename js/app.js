@@ -1,4 +1,9 @@
 (() => {
+  // Configure pdf.js worker if available
+  if (window.pdfjsLib) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+  }
+
   // Default Standards Catalog (OSHA / ANSI / ISO)
   const STANDARDS = {
     ansi: [
@@ -30,12 +35,18 @@
     ]
   };
 
+  const RECENT_KEY = "omron_recent_layouts_v1";
+
   const state = {
     file: null,
+    traceImages: [],      // Array of data URLs (1 per image or 1 per PDF page)
+    tracePageIdx: 0,
+    traceOpacity: 0,      // 0..65 (%)
     selectedStds: new Set(),
     customStds: [],
     currentSpec: null,
-    activePageIdx: 0
+    activePageIdx: 0,
+    selectedItem: null    // { arrayKey, index, item }
   };
 
   // DOM refs
@@ -70,14 +81,29 @@
   const btnParseJson = $("btnParseJson");
   const manualStatus = $("manualStatus");
 
+  const recentSelect = $("recentSelect");
   const btnLoadSample = $("btnLoadSample");
+  const btnDownloadBom = $("btnDownloadBom");
   const btnDownloadVsdx = $("btnDownloadVsdx");
   const btnDownloadJson = $("btnDownloadJson");
+  const traceBar = $("traceBar");
+  const traceOpacity = $("traceOpacity");
+  const traceVal = $("traceVal");
+  const tracePdfPage = $("tracePdfPage");
   const pageTabs = $("pageTabs");
   const emptyPreview = $("emptyPreview");
   const visioSvg = $("visioSvg");
   const previewSubtitle = $("previewSubtitle");
+  const worksheetBar = $("worksheetBar");
   const statsBar = $("statsBar");
+
+  const shapeInspector = $("shapeInspector");
+  const inspTitle = $("inspTitle");
+  const inspText = $("inspText");
+  const inspSize = $("inspSize");
+  const btnFlipOrient = $("btnFlipOrient");
+  const btnDeleteShape = $("btnDeleteShape");
+  const btnCloseInsp = $("btnCloseInsp");
 
   // Init API key from localStorage
   apiKeyInput.value = localStorage.getItem("omron_gemini_api_key") || "";
@@ -85,7 +111,56 @@
     localStorage.setItem("omron_gemini_api_key", apiKeyInput.value.trim());
   });
 
-  // Render Standards Pills
+  // =========================================================================
+  // RECENT DRAWINGS HISTORY (localStorage)
+  // =========================================================================
+  function getRecentLayouts() {
+    try { return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); }
+    catch { return []; }
+  }
+
+  function saveToRecent(spec) {
+    if (!spec || !spec.pages?.length) return;
+    const list = getRecentLayouts();
+    const label = `${spec.output_name || spec.machine || "Layout"} (${new Date().toLocaleDateString()})`;
+    const filtered = list.filter(x => x.spec?.output_name !== spec.output_name);
+    filtered.unshift({ label, savedAt: Date.now(), spec });
+    try {
+      localStorage.setItem(RECENT_KEY, JSON.stringify(filtered.slice(0, 8)));
+    } catch { /* ignore quota */ }
+    renderRecentDropdown();
+  }
+
+  function renderRecentDropdown() {
+    const list = getRecentLayouts();
+    if (!list.length) {
+      recentSelect.classList.add("hidden");
+      return;
+    }
+    recentSelect.classList.remove("hidden");
+    recentSelect.innerHTML = '<option value="">Recent Drawings...</option>';
+    list.forEach((entry, i) => {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = entry.label;
+      recentSelect.appendChild(opt);
+    });
+  }
+
+  recentSelect.addEventListener("change", () => {
+    const idx = recentSelect.value;
+    if (idx === "") return;
+    const entry = getRecentLayouts()[Number(idx)];
+    if (entry?.spec) {
+      jsonInput.value = JSON.stringify(entry.spec, null, 2);
+      loadSpec(entry.spec, false);
+    }
+    recentSelect.value = "";
+  });
+
+  // =========================================================================
+  // STANDARDS PILLS (OSHA / ANSI / ISO + Custom)
+  // =========================================================================
   function renderStdGroup(containerId, items) {
     const el = $(containerId);
     el.innerHTML = "";
@@ -159,7 +234,73 @@
     panelManual.classList.remove("hidden"); panelDirect.classList.add("hidden");
   });
 
-  // File Upload / Drag & Drop
+  // =========================================================================
+  // FILE UPLOAD + TRACE-OVER PDF/IMAGE PREPARATION
+  // =========================================================================
+  async function prepareTraceImages(file) {
+    state.traceImages = [];
+    state.tracePageIdx = 0;
+    tracePdfPage.classList.add("hidden");
+
+    if (file.type.startsWith("image/")) {
+      const url = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+      state.traceImages = [url];
+    } else if (window.pdfjsLib && (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"))) {
+      try {
+        const buf = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+        const maxPages = Math.min(pdf.numPages, 8);
+        for (let i = 1; i <= maxPages; i++) {
+          const page = await pdf.getPage(i);
+          const vp = page.getViewport({ scale: 1.5 });
+          const canvas = document.createElement("canvas");
+          canvas.width = vp.width;
+          canvas.height = vp.height;
+          await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+          state.traceImages.push(canvas.toDataURL("image/jpeg", 0.85));
+        }
+        // Default trace page to the last page (usually the sketch page in Notability PDFs!)
+        state.tracePageIdx = Math.max(0, state.traceImages.length - 1);
+      } catch (err) {
+        console.warn("PDF trace render skipped:", err);
+      }
+    }
+
+    if (state.traceImages.length > 0) {
+      traceBar.classList.remove("hidden");
+      if (state.traceImages.length > 1) {
+        tracePdfPage.classList.remove("hidden");
+        tracePdfPage.innerHTML = "";
+        state.traceImages.forEach((_, idx) => {
+          const opt = document.createElement("option");
+          opt.value = String(idx);
+          opt.textContent = `PDF Pg ${idx + 1}`;
+          if (idx === state.tracePageIdx) opt.selected = true;
+          tracePdfPage.appendChild(opt);
+        });
+      }
+    } else {
+      traceBar.classList.add("hidden");
+    }
+    if (state.currentSpec) renderPreview();
+  }
+
+  traceOpacity.addEventListener("input", () => {
+    state.traceOpacity = Number(traceOpacity.value);
+    traceVal.textContent = state.traceOpacity === 0 ? "Off" : `${state.traceOpacity}%`;
+    if (state.currentSpec) renderPreview();
+  });
+
+  tracePdfPage.addEventListener("change", () => {
+    state.tracePageIdx = Number(tracePdfPage.value);
+    if (state.currentSpec) renderPreview();
+  });
+
   function handleFile(file) {
     if (!file) return;
     state.file = file;
@@ -175,6 +316,7 @@
       imgThumb.classList.add("hidden");
       pdfBadge.classList.remove("hidden");
     }
+    prepareTraceImages(file);
   }
 
   fileInput.addEventListener("change", e => handleFile(e.target.files[0]));
@@ -189,12 +331,20 @@
     e.preventDefault();
     e.stopPropagation();
     state.file = null;
+    state.traceImages = [];
+    state.traceOpacity = 0;
+    traceOpacity.value = "0";
+    traceVal.textContent = "Off";
+    traceBar.classList.add("hidden");
     fileInput.value = "";
     filePreview.classList.add("hidden");
     dropPrompt.classList.remove("hidden");
+    if (state.currentSpec) renderPreview();
   });
 
-  // Build Dynamic AI Prompt with User's Selected OSHA / ANSI / ISO Standards
+  // =========================================================================
+  // DYNAMIC AI PROMPT (Includes Selected Standards + Worksheet Extraction)
+  // =========================================================================
   function buildPrompt() {
     const stds = getSelectedStandards();
     const stdBlock = stds.length
@@ -203,7 +353,7 @@
 
     return `You are an Omron Advanced Services machine safety engineer converting a Notability safeguarding design worksheet PDF/image into a HIGH-DETAIL, ACCURATE JSON layout specification for an automated Microsoft Visio (.vsdx) builder using Omron's native Visio masters.
 
-Analyze EVERY page of the attached Notability drawing (worksheet header, mesh guarding / BOM dimensions, and every red/black top-down machine layout sketch).
+Analyze EVERY page of the attached Notability drawing (Page 1 worksheet header/risk scores/photo numbers, mesh guarding / BOM dimensions, and every red/black top-down machine layout sketch).
 
 STRICT FIDELITY RULES:
 1. TRACE EVERY DETAIL — do NOT oversimplify!
@@ -255,6 +405,14 @@ JSON SCHEMA:
   "plant": "Plant Name, City, ST",
   "machine": "Machine Type (Photos XX-YY)",
   "asset_line": "Model #          Serial #          Asset # XXXX",
+  "worksheet": {
+    "department": "Plant 4",
+    "date": "10/29",
+    "inspector": "RW / JC",
+    "photo_range": "61 thru 104",
+    "risk_before": "S3 / E2 / A3",
+    "risk_after": "S2 / E1 / A1"
+  },
   "pages": [
     {
       "name": "Page Tab Name",
@@ -299,8 +457,8 @@ JSON SCHEMA:
   btnParseJson.addEventListener("click", () => {
     try {
       const spec = VisioBuilder.parseAiJson(jsonInput.value);
-      loadSpec(spec);
-      showStatus(manualStatus, "success", `Loaded ${spec.pages.length} page(s)! Review the preview and tap Download .vsdx.`);
+      loadSpec(spec, true);
+      showStatus(manualStatus, "success", `Loaded ${spec.pages.length} page(s)! Review/nudge in the preview and tap Download .vsdx.`);
     } catch (err) {
       showStatus(manualStatus, "error", err.message);
     }
@@ -355,8 +513,8 @@ JSON SCHEMA:
       const rawText = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("\n") || "";
       const spec = VisioBuilder.parseAiJson(rawText);
       jsonInput.value = JSON.stringify(spec, null, 2);
-      loadSpec(spec);
-      showStatus(aiStatus, "success", `Done! Generated ${spec.pages.length} page(s). Review the preview and tap Download .vsdx.`);
+      loadSpec(spec, true);
+      showStatus(aiStatus, "success", `Done! Generated ${spec.pages.length} page(s). Use the Trace Sketch slider or drag shapes to fine-tune.`);
     } catch (err) {
       showStatus(aiStatus, "error", err.message);
     } finally {
@@ -364,15 +522,137 @@ JSON SCHEMA:
     }
   });
 
-  // Load Spec & Render Live SVG Preview
-  function loadSpec(spec) {
+  // =========================================================================
+  // SHAPE INSPECTOR (Tap-to-Edit / Flip / Resize / Delete)
+  // =========================================================================
+  function selectItem(arrayKey, index, item) {
+    state.selectedItem = { arrayKey, index, item };
+    shapeInspector.classList.remove("hidden");
+
+    const titles = {
+      rectangles: "Machine / Box",
+      fences: `Guard Fence (${item.kind || "mesh"})`,
+      letters: "Letter Tag",
+      devices: `Safety Device (${item.type || "device"})`,
+      labels: "Text Label"
+    };
+    inspTitle.textContent = `Selected: ${titles[arrayKey] || arrayKey}`;
+
+    if (arrayKey === "rectangles") {
+      inspText.value = item.label || "";
+      inspText.placeholder = "Box label";
+      inspSize.value = item.w ?? "";
+      inspSize.placeholder = "Width (in)";
+      inspSize.classList.remove("hidden");
+      btnFlipOrient.classList.add("hidden");
+    } else if (arrayKey === "fences") {
+      inspText.value = item.note || "";
+      inspText.placeholder = "Guard note / dimensions";
+      inspSize.value = item.len ?? "";
+      inspSize.placeholder = "Length (in)";
+      inspSize.classList.remove("hidden");
+      btnFlipOrient.classList.remove("hidden");
+    } else if (arrayKey === "letters") {
+      inspText.value = item.char || "";
+      inspText.placeholder = "Letter (A-N)";
+      inspSize.classList.add("hidden");
+      btnFlipOrient.classList.add("hidden");
+    } else if (arrayKey === "devices") {
+      inspText.value = item.note || "";
+      inspText.placeholder = "Device note";
+      inspSize.classList.add("hidden");
+      btnFlipOrient.classList.add("hidden");
+    } else if (arrayKey === "labels") {
+      inspText.value = item.text || "";
+      inspText.placeholder = "Label text";
+      inspSize.classList.add("hidden");
+      btnFlipOrient.classList.add("hidden");
+    }
+    renderPreview();
+  }
+
+  function clearSelection() {
+    state.selectedItem = null;
+    shapeInspector.classList.add("hidden");
+    if (state.currentSpec) renderPreview();
+  }
+
+  inspText.addEventListener("input", () => {
+    const sel = state.selectedItem;
+    if (!sel) return;
+    if (sel.arrayKey === "rectangles") sel.item.label = inspText.value;
+    else if (sel.arrayKey === "fences" || sel.arrayKey === "devices") sel.item.note = inspText.value;
+    else if (sel.arrayKey === "letters") sel.item.char = inspText.value.slice(0, 2).toUpperCase();
+    else if (sel.arrayKey === "labels") sel.item.text = inspText.value;
+    jsonInput.value = JSON.stringify(state.currentSpec, null, 2);
+    renderPreview();
+  });
+
+  inspSize.addEventListener("input", () => {
+    const sel = state.selectedItem;
+    const v = Number(inspSize.value);
+    if (!sel || !v || v <= 0) return;
+    if (sel.arrayKey === "rectangles") sel.item.w = v;
+    else if (sel.arrayKey === "fences") sel.item.len = v;
+    jsonInput.value = JSON.stringify(state.currentSpec, null, 2);
+    renderPreview();
+  });
+
+  btnFlipOrient.addEventListener("click", () => {
+    const sel = state.selectedItem;
+    if (!sel || sel.arrayKey !== "fences") return;
+    delete sel.item.angle_deg;
+    sel.item.orient = (sel.item.orient === "V" || sel.item.orient === "vertical") ? "H" : "V";
+    jsonInput.value = JSON.stringify(state.currentSpec, null, 2);
+    renderPreview();
+  });
+
+  btnDeleteShape.addEventListener("click", () => {
+    const sel = state.selectedItem;
+    if (!sel || !state.currentSpec) return;
+    const pg = state.currentSpec.pages[state.activePageIdx];
+    if (pg && Array.isArray(pg[sel.arrayKey])) {
+      pg[sel.arrayKey].splice(sel.index, 1);
+      jsonInput.value = JSON.stringify(state.currentSpec, null, 2);
+    }
+    clearSelection();
+  });
+
+  btnCloseInsp.addEventListener("click", clearSelection);
+
+  // =========================================================================
+  // LOAD SPEC & RENDER LIVE SVG PREVIEW
+  // =========================================================================
+  function loadSpec(spec, saveRecent = false) {
     state.currentSpec = spec;
     state.activePageIdx = 0;
+    state.selectedItem = null;
+    shapeInspector.classList.add("hidden");
+    btnDownloadBom.disabled = false;
     btnDownloadVsdx.disabled = false;
     btnDownloadJson.disabled = false;
     previewSubtitle.textContent = `${spec.plant || "Omron Layout"} — ${spec.machine || ""}`;
+    if (saveRecent) saveToRecent(spec);
     renderPageTabs();
+    renderWorksheetSummary();
     renderPreview();
+  }
+
+  function renderWorksheetSummary() {
+    const ws = state.currentSpec?.worksheet;
+    if (!ws || !Object.values(ws).some(Boolean)) {
+      worksheetBar.classList.add("hidden");
+      return;
+    }
+    const parts = [];
+    if (ws.department) parts.push(`<strong>Dept:</strong> ${ws.department}`);
+    if (ws.inspector) parts.push(`<strong>By:</strong> ${ws.inspector}`);
+    if (ws.date) parts.push(`<strong>Date:</strong> ${ws.date}`);
+    if (ws.photo_range) parts.push(`<strong>Photos:</strong> ${ws.photo_range}`);
+    if (ws.risk_before) parts.push(`<strong>Risk Before:</strong> ${ws.risk_before}`);
+    if (ws.risk_after) parts.push(`<strong>Risk After:</strong> ${ws.risk_after}`);
+    worksheetBar.innerHTML = parts.join(" &nbsp;|&nbsp; ");
+    worksheetBar.classList.remove("hidden");
   }
 
   function renderPageTabs() {
@@ -390,6 +670,7 @@ JSON SCHEMA:
       btn.textContent = `${idx + 1}. ${p.name || "Page " + (idx + 1)}`;
       btn.addEventListener("click", () => {
         state.activePageIdx = idx;
+        clearSelection();
         renderPageTabs();
         renderPreview();
       });
@@ -404,7 +685,6 @@ JSON SCHEMA:
     return el;
   }
 
-  // Convert Visio inches (origin bottom-left, 8.5x11) -> SVG px (origin top-left, 850x1100)
   const vx = x => Number(x) * 100;
   const vy = y => (11 - Number(y)) * 100;
 
@@ -417,7 +697,6 @@ JSON SCHEMA:
     visioSvg.classList.remove("hidden");
     visioSvg.innerHTML = "";
 
-    // Defs for arrowhead & hatching
     const defs = svgEl("defs");
     const marker = svgEl("marker", { id: "arr", viewBox: "0 0 10 10", refX: "8", refY: "5", markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse" });
     marker.appendChild(svgEl("path", { d: "M 0 1 L 10 5 L 0 9 z", fill: "#1e293b" }));
@@ -425,7 +704,20 @@ JSON SCHEMA:
     visioSvg.appendChild(defs);
 
     // Outer Omron Sheet Border
-    visioSvg.appendChild(svgEl("rect", { x: 18, y: 18, width: 814, height: 1064, fill: "#ffffff", stroke: "#0f172a", "stroke-width": 2 }));
+    const bgRect = svgEl("rect", { x: 18, y: 18, width: 814, height: 1064, fill: "#ffffff", stroke: "#0f172a", "stroke-width": 2 });
+    bgRect.addEventListener("click", () => { if (state.selectedItem) clearSelection(); });
+    visioSvg.appendChild(bgRect);
+
+    // Optional Trace-Over Sketch Image (ONLY in web preview, never exported to .vsdx)
+    if (state.traceOpacity > 0 && state.traceImages[state.tracePageIdx]) {
+      visioSvg.appendChild(svgEl("image", {
+        href: state.traceImages[state.tracePageIdx],
+        x: 30, y: 126, width: 790, height: 530,
+        opacity: (state.traceOpacity / 100).toFixed(2),
+        preserveAspectRatio: "xMidYMid meet",
+        "pointer-events": "none"
+      }));
+    }
 
     // Top Header
     const h1 = pg.header_plant || spec.plant || "Plant Name";
@@ -444,8 +736,11 @@ JSON SCHEMA:
       visioSvg.appendChild(svgEl("path", { d, fill: "none", stroke: "#475569", "stroke-width": 2, "stroke-dasharray": "5 3" }));
     }
 
-    // Helper: attach touch + mouse Drag-to-Nudge to any SVG group bound to a spec item { x, y }
-    function makeDraggable(groupEl, itemObj) {
+    // Helper: attach touch + mouse Drag-to-Nudge + Tap-to-Select
+    function makeInteractive(groupEl, arrayKey, index, itemObj) {
+      const isSelected = state.selectedItem && state.selectedItem.arrayKey === arrayKey && state.selectedItem.index === index;
+      if (isSelected) groupEl.setAttribute("filter", "drop-shadow(0 0 3px #2563eb)");
+
       groupEl.style.cursor = "grab";
       groupEl.style.touchAction = "none";
       groupEl.addEventListener("pointerdown", e => {
@@ -458,11 +753,13 @@ JSON SCHEMA:
         ptStart.x = e.clientX; ptStart.y = e.clientY;
         const svgStart = ptStart.matrixTransform(ctm);
         const origX = Number(itemObj.x), origY = Number(itemObj.y);
+        let moved = false;
 
         function onMove(ev) {
           const p = visioSvg.createSVGPoint();
           p.x = ev.clientX; p.y = ev.clientY;
           const svgNow = p.matrixTransform(visioSvg.getScreenCTM().inverse());
+          if (Math.hypot(svgNow.x - svgStart.x, svgNow.y - svgStart.y) > 4) moved = true;
           const dxIn = (svgNow.x - svgStart.x) / 100;
           const dyIn = -(svgNow.y - svgStart.y) / 100;
           itemObj.x = Number(Math.max(0.4, Math.min(8.1, origX + dxIn)).toFixed(2));
@@ -474,19 +771,23 @@ JSON SCHEMA:
           groupEl.removeEventListener("pointermove", onMove);
           groupEl.removeEventListener("pointerup", onUp);
           jsonInput.value = JSON.stringify(state.currentSpec, null, 2);
-          renderPreview();
+          if (!moved) {
+            selectItem(arrayKey, index, itemObj);
+          } else {
+            renderPreview();
+          }
         }
         groupEl.addEventListener("pointermove", onMove);
         groupEl.addEventListener("pointerup", onUp);
       });
     }
 
-    // Machine Rectangles (draggable)
-    for (const r of pg.rectangles || []) {
+    // Machine Rectangles
+    (pg.rectangles || []).forEach((r, idx) => {
       const grp = svgEl("g");
       const w = Number(r.w) * 100, h = Number(r.h) * 100;
       const x = vx(r.x) - w / 2, y = vy(r.y) - h / 2;
-      grp.appendChild(svgEl("rect", { x, y, width: w, height: h, fill: r.fill || "#ffffff", stroke: "#0f172a", "stroke-width": 1.8 }));
+      grp.appendChild(svgEl("rect", { x, y, width: w, height: h, fill: r.fill || "#ffffff", "fill-opacity": state.traceOpacity > 0 ? "0.75" : "1", stroke: "#0f172a", "stroke-width": 1.8 }));
       if (r.label) {
         const lines = String(r.label).split("\n");
         lines.forEach((ln, i) => {
@@ -494,9 +795,9 @@ JSON SCHEMA:
           grp.appendChild(svgEl("text", { x: vx(r.x), y: ly, "text-anchor": "middle", "font-size": Number(r.font_pt || 8.5) * 1.35, "font-weight": 700, fill: "#0f172a", "pointer-events": "none" }, ln));
         });
       }
-      makeDraggable(grp, r);
+      makeInteractive(grp, "rectangles", idx, r);
       visioSvg.appendChild(grp);
-    }
+    });
 
     // Flow Arrows
     for (const a of pg.arrows || []) {
@@ -514,12 +815,12 @@ JSON SCHEMA:
       }));
     }
 
-    // Fences (Existing Black, New Mesh, Polycarbonate Cyan, Sheet Metal Hatched — draggable)
-    for (const f of pg.fences || []) {
+    // Fences
+    (pg.fences || []).forEach((f, idx) => {
       const kind = String(f.kind || "mesh").toLowerCase().trim();
       const len = Number(f.len) * 100;
       const cx = vx(f.x), cy = vy(f.y);
-      let deg = 90; // Horizontal
+      let deg = 90;
       if (f.angle_deg !== undefined && f.angle_deg !== null && f.angle_deg !== "") {
         deg = -Number(f.angle_deg);
       } else if (f.orient === "V" || f.orient === "vertical") {
@@ -531,22 +832,22 @@ JSON SCHEMA:
       const stroke = kind === "existing" || kind === "sheet_metal" ? "#0f172a" : (kind === "polycarbonate" || kind === "lexan" ? "#0e7490" : "#dc2626");
       g.appendChild(svgEl("rect", { x: -5, y: -len / 2, width: 10, height: len, fill, stroke, "stroke-width": 1.6 }));
       outer.appendChild(g);
-      makeDraggable(outer, f);
+      makeInteractive(outer, "fences", idx, f);
       visioSvg.appendChild(outer);
-    }
+    });
 
-    // Letters (A..N — draggable)
-    for (const l of pg.letters || []) {
+    // Letters
+    (pg.letters || []).forEach((l, idx) => {
       const grp = svgEl("g");
       grp.appendChild(svgEl("text", {
         x: vx(l.x), y: vy(l.y) + 6, "text-anchor": "middle",
         "font-size": 17, "font-weight": 800, fill: "#dc2626"
       }, String(l.char || "").toUpperCase()));
-      makeDraggable(grp, l);
+      makeInteractive(grp, "letters", idx, l);
       visioSvg.appendChild(grp);
-    }
+    });
 
-    // Safety Devices (all Omron Legend symbols — draggable)
+    // Safety Devices
     const deviceBadge = {
       locking_slide_bolt:        { txt: "LSB",  bg: "#dc2626", fg: "#fff" },
       lsb:                       { txt: "LSB",  bg: "#dc2626", fg: "#fff" },
@@ -579,19 +880,19 @@ JSON SCHEMA:
       scanner_existing:          { txt: "SCN",  bg: "#64748b", fg: "#fff" }
     };
 
-    for (const d of pg.devices || []) {
+    (pg.devices || []).forEach((d, idx) => {
       const k = String(d.type || "").toLowerCase().trim();
       const b = deviceBadge[k] || { txt: k.slice(0, 4).toUpperCase(), bg: "#dc2626", fg: "#fff" };
       const x = vx(d.x), y = vy(d.y);
       const grp = svgEl("g");
       grp.appendChild(svgEl("rect", { x: x - 16, y: y - 10, width: 32, height: 20, rx: 4, fill: b.bg, stroke: "#0f172a", "stroke-width": 1.2 }));
       grp.appendChild(svgEl("text", { x, y: y + 4, "text-anchor": "middle", "font-size": 8.5, "font-weight": 800, fill: b.fg, "pointer-events": "none" }, b.txt));
-      makeDraggable(grp, d);
+      makeInteractive(grp, "devices", idx, d);
       visioSvg.appendChild(grp);
-    }
+    });
 
-    // Labels (draggable)
-    for (const lb of pg.labels || []) {
+    // Labels
+    (pg.labels || []).forEach((lb, idx) => {
       const grp = svgEl("g");
       const lines = String(lb.text || "").split("\n");
       lines.forEach((ln, i) => {
@@ -600,9 +901,9 @@ JSON SCHEMA:
           "font-size": Number(lb.font_pt || 7.5) * 1.3, "font-weight": 700, fill: lb.color || "#c00000"
         }, ln));
       });
-      makeDraggable(grp, lb);
+      makeInteractive(grp, "labels", idx, lb);
       visioSvg.appendChild(grp);
-    }
+    });
 
     // Mesh Guarding & Optional Standards Box
     const showStd = chkShowStdBox.checked;
@@ -626,13 +927,10 @@ JSON SCHEMA:
       });
     }
 
-    // Official Omron Bottom Legend Footer (real image in preview; full native Visio shapes in .vsdx)
+    // Official Omron Bottom Legend Footer
     visioSvg.appendChild(svgEl("image", {
       href: "assets/omron_legend_footer.png",
-      x: 18,
-      y: 856,
-      width: 814,
-      height: 226,
+      x: 18, y: 856, width: 814, height: 226,
       preserveAspectRatio: "xMidYMid meet"
     }));
     visioSvg.appendChild(svgEl("rect", { x: 18, y: 856, width: 814, height: 226, fill: "none", stroke: "#0f172a", "stroke-width": 1.5 }));
@@ -648,7 +946,68 @@ JSON SCHEMA:
     ].map(s => `<span class="stat-chip">${s}</span>`).join("");
   }
 
-  // Download .vsdx
+  // =========================================================================
+  // EXPORTS: BOM (.csv), VISIO (.vsdx), JSON
+  // =========================================================================
+  function csvEsc(v) {
+    const s = String(v ?? "");
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+
+  btnDownloadBom.addEventListener("click", () => {
+    const spec = state.currentSpec;
+    if (!spec) return;
+    const rows = [];
+    rows.push(["OMRON SAFEGUARDING BILL OF MATERIALS (BOM)"]);
+    rows.push(["Plant", spec.plant || "", "Machine", spec.machine || "", "Asset", spec.asset_line || ""]);
+    if (spec.worksheet) {
+      const ws = spec.worksheet;
+      rows.push(["Department", ws.department || "", "Inspector", ws.inspector || "", "Date", ws.date || ""]);
+      rows.push(["Photos", ws.photo_range || "", "Risk Before", ws.risk_before || "", "Risk After", ws.risk_after || ""]);
+    }
+    rows.push([]);
+    rows.push(["Page", "Category", "Tag / Type", "Qty", "Specification / Notes", "Applicable Standards (OSHA / ANSI / ISO)"]);
+
+    for (const pg of spec.pages || []) {
+      const pName = pg.name || "Page";
+      // Count letter tags per page for accurate guard quantities
+      const letterCounts = {};
+      for (const l of pg.letters || []) {
+        const ch = String(l.char || "").toUpperCase().trim();
+        if (ch) letterCounts[ch] = (letterCounts[ch] || 0) + 1;
+      }
+      for (const line of pg.mesh_guarding || []) {
+        const m = String(line).match(/^\s*([A-N])\s*[:=]\s*(.+)$/i);
+        const tag = m ? m[1].toUpperCase() : "GUARD";
+        const desc = m ? m[2].trim() : line;
+        const qty = letterCounts[tag] || 1;
+        rows.push([pName, "Guarding Panel", `Panel ${tag}`, qty, desc, getSelectedStandards().slice(0, 3).join("; ")]);
+      }
+
+      // Group safety devices by type on this page
+      const devGroups = {};
+      for (const d of pg.devices || []) {
+        const key = String(d.type || "device").toLowerCase().trim();
+        if (!devGroups[key]) devGroups[key] = { qty: 0, notes: new Set(), stds: new Set() };
+        devGroups[key].qty++;
+        if (d.note) devGroups[key].notes.add(d.note);
+        if (d.standard) devGroups[key].stds.add(d.standard);
+      }
+      for (const [k, info] of Object.entries(devGroups)) {
+        rows.push([pName, "Safety Device", k.replace(/_/g, " ").toUpperCase(), info.qty, [...info.notes].join(" | "), [...info.stds].join("; ")]);
+      }
+    }
+
+    const csv = "\uFEFF" + rows.map(r => r.map(csvEsc).join(",")).join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const base = (spec.output_name || "Omron_Safety_BOM").replace(/[\\/:*?"<>|]/g, "_");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${base}_BOM.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  });
+
   btnDownloadVsdx.addEventListener("click", async () => {
     if (!state.currentSpec) return;
     btnDownloadVsdx.disabled = true;
@@ -673,7 +1032,6 @@ JSON SCHEMA:
     }
   });
 
-  // Download JSON
   btnDownloadJson.addEventListener("click", () => {
     if (!state.currentSpec) return;
     const blob = new Blob([JSON.stringify(state.currentSpec, null, 2)], { type: "application/json" });
@@ -684,7 +1042,7 @@ JSON SCHEMA:
     a.click();
   });
 
-  // Load Generic Sample (no client NDA data)
+  // Load Generic Sample
   btnLoadSample.addEventListener("click", () => {
     const sample = {
       output_name: "Sample_Tube_Mill_Flying_Saw",
@@ -692,6 +1050,14 @@ JSON SCHEMA:
       plant: "Sample Manufacturing Plant, OH",
       machine: "Tube Mill Flying Saw (Sample Layout)",
       asset_line: "Model # FS-400          Serial # 10042          Asset # LINE-A",
+      worksheet: {
+        department: "Plant 4",
+        date: "11/25",
+        inspector: "Safety Inspector",
+        photo_range: "61 thru 104",
+        risk_before: "S3 / E2 / A3",
+        risk_after: "S2 / E1 / A1"
+      },
       pages: [{
         name: "Flying Saw Layout",
         header_machine: "Line A — Flying Saw Safeguarding Layout",
@@ -749,11 +1115,12 @@ JSON SCHEMA:
       }]
     };
     jsonInput.value = JSON.stringify(sample, null, 2);
-    loadSpec(sample);
+    loadSpec(sample, false);
   });
 
-  // Initialize standards pills
+  // Initialize standards pills & recent drawings dropdown
   renderStdGroup("ansiPills", STANDARDS.ansi);
   renderStdGroup("isoPills", STANDARDS.iso);
   renderStdGroup("oshaPills", STANDARDS.osha);
+  renderRecentDropdown();
 })();

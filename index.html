@@ -8,6 +8,7 @@
   <title>Omron Safety Studio — Notability to Visio</title>
   <link rel="stylesheet" href="styles.css" />
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 </head>
 <body>
   <header class="app-header">
@@ -19,7 +20,12 @@
           <p class="subtitle">Notability Sketch → Native Visio (.vsdx) with OSHA · ANSI · ISO</p>
         </div>
       </div>
-      <button id="btnLoadSample" class="btn btn-ghost btn-sm" title="Load a sample layout to preview">Try Sample</button>
+      <div class="header-actions">
+        <select id="recentSelect" class="recent-select hidden" title="Load a recent layout saved in this browser">
+          <option value="">Recent Drawings...</option>
+        </select>
+        <button id="btnLoadSample" class="btn btn-ghost btn-sm" title="Load a sample layout to preview">Try Sample</button>
+      </div>
     </div>
   </header>
 
@@ -155,12 +161,21 @@
           <div class="preview-top">
             <div>
               <h2>Live Visio Preview</h2>
-              <p id="previewSubtitle" class="hint">Upload a drawing or tap "Try Sample" — drag any shape to nudge before export</p>
+              <p id="previewSubtitle" class="hint">Upload a drawing or tap "Try Sample" — drag or tap any shape to edit</p>
             </div>
             <div class="export-actions">
+              <button id="btnDownloadBom" type="button" class="btn btn-secondary btn-sm" disabled title="Export Bill of Materials to Excel CSV">BOM (.csv)</button>
               <button id="btnDownloadJson" type="button" class="btn btn-ghost btn-sm" disabled>JSON</button>
               <button id="btnDownloadVsdx" type="button" class="btn btn-success" disabled>Download .vsdx</button>
             </div>
+          </div>
+
+          <!-- TRACE-OVER SKETCH OVERLAY TOOLBAR -->
+          <div id="traceBar" class="trace-bar hidden">
+            <label for="traceOpacity">Trace Sketch:</label>
+            <input id="traceOpacity" type="range" min="0" max="65" value="0" />
+            <span id="traceVal" class="trace-val">Off</span>
+            <select id="tracePdfPage" class="trace-page-select hidden" title="Choose which PDF page to trace behind the preview"></select>
           </div>
 
           <div id="pageTabs" class="page-tabs hidden"></div>
@@ -174,6 +189,19 @@
             <svg id="visioSvg" class="visio-svg hidden" viewBox="0 0 850 1100" xmlns="http://www.w3.org/2000/svg"></svg>
           </div>
 
+          <!-- TAP-TO-EDIT SHAPE INSPECTOR BAR -->
+          <div id="shapeInspector" class="inspector-bar hidden">
+            <div class="inspector-title" id="inspTitle">Selected Shape</div>
+            <div class="inspector-fields">
+              <input id="inspText" type="text" placeholder="Label / Note" />
+              <input id="inspSize" type="number" step="0.1" min="0.1" max="7" placeholder="Size (in)" title="Length or Width (inches)" />
+              <button id="btnFlipOrient" type="button" class="btn btn-secondary btn-sm hidden">Flip H/V</button>
+              <button id="btnDeleteShape" type="button" class="btn btn-danger btn-sm">Delete</button>
+              <button id="btnCloseInsp" type="button" class="btn btn-ghost btn-sm" style="color:#334155;">Done</button>
+            </div>
+          </div>
+
+          <div id="worksheetBar" class="worksheet-bar hidden"></div>
           <div id="statsBar" class="stats-bar hidden"></div>
         </div>
       </section>
