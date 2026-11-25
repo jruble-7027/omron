@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Omron Safety Studio — Notability to Visio</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="brand">
+        <span class="brand-badge">OMRON</span>
+        <div>
+          <h1>Safety Layout Studio</h1>
+          <p class="subtitle">Notability Sketch → Native Visio (.vsdx) with OSHA · ANSI · ISO</p>
+        </div>
+      </div>
+      <button id="btnLoadSample" class="btn btn-ghost btn-sm" title="Load a sample layout to preview">Try Sample</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="grid-layout">
+      <!-- LEFT COLUMN: INPUTS -->
+      <section class="col-inputs">
+        <!-- CARD 1: UPLOAD DRAWING -->
+        <div class="card">
+          <div class="card-header">
+            <span class="step-num">1</span>
+            <div>
+              <h2>Drop Notability Drawing</h2>
+              <p class="hint">PDF export or photo (PNG / JPG) from Notability</p>
+            </div>
+          </div>
+
+          <label id="dropZone" class="drop-zone" for="fileInput">
+            <input id="fileInput" type="file" accept="application/pdf,image/*" hidden />
+            <div id="dropPrompt" class="drop-prompt">
+              <div class="drop-icon">📄</div>
+              <div class="drop-title">Tap to pick or drop PDF / Image</div>
+              <div class="drop-sub">Works on iPad, iPhone, Android &amp; Desktop</div>
+            </div>
+            <div id="filePreview" class="file-preview hidden">
+              <img id="imgThumb" class="img-thumb hidden" alt="Drawing preview" />
+              <div id="pdfBadge" class="pdf-badge hidden">PDF</div>
+              <div class="file-meta">
+                <div id="fileName" class="file-name"></div>
+                <div id="fileSize" class="file-size"></div>
+              </div>
+              <button id="btnClearFile" type="button" class="btn btn-ghost btn-sm">Remove</button>
+            </div>
+          </label>
+        </div>
+
+        <!-- CARD 2: STANDARDS SELECTOR (OSHA / ANSI / ISO) -->
+        <div class="card">
+          <div class="card-header">
+            <span class="step-num">2</span>
+            <div>
+              <h2>Select Safety Regulations</h2>
+              <p class="hint">Tap to toggle OSHA, ANSI &amp; ISO standards applied to this drawing</p>
+            </div>
+          </div>
+
+          <div class="std-group">
+            <div class="std-group-title">ANSI (Machine Safety &amp; Safeguarding)</div>
+            <div id="ansiPills" class="pill-wrap"></div>
+          </div>
+
+          <div class="std-group">
+            <div class="std-group-title">ISO (International Machinery Safety)</div>
+            <div id="isoPills" class="pill-wrap"></div>
+          </div>
+
+          <div class="std-group">
+            <div class="std-group-title">OSHA (29 CFR 1910 General Industry)</div>
+            <div id="oshaPills" class="pill-wrap"></div>
+          </div>
+
+          <div class="custom-std-row">
+            <input id="customStdInput" type="text" placeholder="Add custom standard (e.g. ANSI B11.1, NFPA 79, CSA Z432)" />
+            <button id="btnAddStd" type="button" class="btn btn-secondary">+ Add</button>
+          </div>
+          <div id="customPills" class="pill-wrap"></div>
+
+          <label class="toggle-row">
+            <input id="chkShowStdBox" type="checkbox" />
+            <span>Show visible Standards Compliance box on Visio page</span>
+          </label>
+          <p class="micro-note">Selected standards are always embedded inside each Visio shape's Shape Data for reporting.</p>
+        </div>
+
+        <!-- CARD 3: GENERATE (DIRECT AI OR CORPORATE COPY-PASTE) -->
+        <div class="card">
+          <div class="card-header">
+            <span class="step-num">3</span>
+            <div>
+              <h2>Generate Visio Layout</h2>
+              <p class="hint">Use 1-Click AI directly, or Copy-Paste with your company AI</p>
+            </div>
+          </div>
+
+          <div class="tabs">
+            <button id="tabDirect" class="tab active" type="button">1-Click AI (Gemini)</button>
+            <button id="tabManual" class="tab" type="button">Corporate Copy-Paste</button>
+          </div>
+
+          <!-- TAB A: DIRECT GEMINI API -->
+          <div id="panelDirect" class="tab-panel">
+            <div class="field-row">
+              <label for="apiKeyInput">Gemini API Key <span class="muted">(saved only in this browser)</span></label>
+              <input id="apiKeyInput" type="password" placeholder="AIza..." autocomplete="off" />
+            </div>
+            <div class="field-row">
+              <label for="modelSelect">Vision Model</label>
+              <select id="modelSelect">
+                <option value="gemini-2.5-pro">Gemini 2.5 Pro (Best sketch accuracy)</option>
+                <option value="gemini-2.5-flash">Gemini 2.5 Flash (Faster)</option>
+              </select>
+            </div>
+            <button id="btnAnalyze" type="button" class="btn btn-primary btn-block">
+              Analyze Drawing &amp; Build Visio
+            </button>
+            <div id="aiStatus" class="status-box hidden"></div>
+          </div>
+
+          <!-- TAB B: CORPORATE COPY-PASTE -->
+          <div id="panelManual" class="tab-panel hidden">
+            <p class="hint" style="margin-bottom: 10px;">
+              1. Tap <strong>Copy Custom Prompt</strong> (includes your selected OSHA/ANSI/ISO standards).<br />
+              2. Paste the prompt + your Notability PDF into Copilot, Gemini, or ChatGPT.<br />
+              3. Paste the AI's JSON reply below and tap <strong>Build Preview &amp; Visio</strong>.
+            </p>
+            <div class="btn-row">
+              <button id="btnCopyPrompt" type="button" class="btn btn-secondary">Copy Custom Prompt</button>
+              <span id="copyConfirm" class="copy-confirm hidden">Copied!</span>
+            </div>
+            <textarea id="jsonInput" rows="8" placeholder='Paste AI JSON output here (starts with { and ends with })...'></textarea>
+            <button id="btnParseJson" type="button" class="btn btn-primary btn-block">
+              Build Preview &amp; Visio
+            </button>
+            <div id="manualStatus" class="status-box hidden"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT COLUMN: LIVE PREVIEW & EXPORT -->
+      <section class="col-preview">
+        <div class="card preview-card">
+          <div class="preview-top">
+            <div>
+              <h2>Live Visio Preview</h2>
+              <p id="previewSubtitle" class="hint">Upload a drawing or tap "Try Sample" to preview</p>
+            </div>
+            <div class="export-actions">
+              <button id="btnDownloadJson" type="button" class="btn btn-ghost btn-sm" disabled>JSON</button>
+              <button id="btnDownloadVsdx" type="button" class="btn btn-success" disabled>Download .vsdx</button>
+            </div>
+          </div>
+
+          <div id="pageTabs" class="page-tabs hidden"></div>
+
+          <div class="canvas-wrap">
+            <div id="emptyPreview" class="empty-preview">
+              <div class="empty-icon">📐</div>
+              <p>Your 8.5" × 11" Omron Visio sheet preview will appear here.</p>
+              <p class="micro-note">Includes native Omron masters, Mesh Guarding schedule, bottom legend &amp; ANSI/ISO/OSHA Shape Data.</p>
+            </div>
+            <svg id="visioSvg" class="visio-svg hidden" viewBox="0 0 850 1100" xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
+
+          <div id="statsBar" class="stats-bar hidden"></div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="js/visioBuilder.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
