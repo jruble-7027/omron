@@ -210,19 +210,25 @@ STRICT FIDELITY RULES:
    - Include ALL black machine boxes, conveyors, roll stands, scrap chutes, tables, consoles, and cabinets.
    - Include ALL existing black perimeter/divider fence segments ("kind": "existing").
    - Do NOT merge multiple individual red guard panels into one bar. Emit each panel segment individually with its own letter tag.
-2. USE OMRON'S EXACT SHORTHAND MAPPING:
-   - "LSB" / hinged door slide bolt      -> device type: "locking_slide_bolt"
+2. USE OMRON'S EXACT SHORTHAND & LEGEND MAPPING:
+   - Guard materials ("fences[].kind"): "mesh" (wire mesh), "polycarbonate" (cyan/lexan), "sheet_metal" (hatched), "existing" (existing black fence)
+   - "LSB" / slide bolt w/ locking       -> device type: "locking_slide_bolt"
+   - Slide bolt w/ non-locking           -> device type: "slide_bolt_non_locking"
    - "RS" / Reset button                 -> device type: "reset"
    - "AR" / Access Request               -> device type: "access_request"
    - "AR / RS" combo                     -> emit BOTH "access_request" and "reset" (or "reset_estop")
    - "[X] L" / locking interlock         -> device type: "locking"
+   - "[X] N" / non-locking interlock     -> device type: "non_locking"
+   - "[X] R" / rolling limit switch      -> device type: "rolling_limit"
    - "[X] M" / magnetic interlock        -> device type: "magnetic"
    - Existing interlock                  -> device type: "existing_interlock"
    - E-Stop button                       -> device type: "e_stop" (or "e_stop_existing")
    - Red dot / E-Stop w/ ring guard      -> device type: "ring_guard"
+   - Start / Stop E-Stop station         -> device type: "start_stop_estop"
+   - Disconnect / Start Stop / E-Stop    -> device type: "disconnect_start_stop_estop"
+   - New / Existing Disconnect           -> device type: "disconnect_new" or "disconnect"
    - Enabling device / switch            -> device type: "enabling"
    - Yellow safety controller / SIC      -> device type: "safety_ctrl"
-   - Electrical disconnect               -> device type: "disconnect"
    - Air lockout valve (e.g. 1/2" valve) -> device type: "air_lockout" (and "frl" if FRL shown)
    - Light Curtain Transmitter ("T")     -> device type: "lc_trans"
    - Light Curtain Receiver ("R")        -> device type: "lc_rec"
@@ -438,18 +444,58 @@ JSON SCHEMA:
       visioSvg.appendChild(svgEl("path", { d, fill: "none", stroke: "#475569", "stroke-width": 2, "stroke-dasharray": "5 3" }));
     }
 
-    // Machine Rectangles
+    // Helper: attach touch + mouse Drag-to-Nudge to any SVG group bound to a spec item { x, y }
+    function makeDraggable(groupEl, itemObj) {
+      groupEl.style.cursor = "grab";
+      groupEl.style.touchAction = "none";
+      groupEl.addEventListener("pointerdown", e => {
+        e.preventDefault();
+        e.stopPropagation();
+        groupEl.setPointerCapture(e.pointerId);
+        groupEl.style.cursor = "grabbing";
+        const ptStart = visioSvg.createSVGPoint();
+        const ctm = visioSvg.getScreenCTM().inverse();
+        ptStart.x = e.clientX; ptStart.y = e.clientY;
+        const svgStart = ptStart.matrixTransform(ctm);
+        const origX = Number(itemObj.x), origY = Number(itemObj.y);
+
+        function onMove(ev) {
+          const p = visioSvg.createSVGPoint();
+          p.x = ev.clientX; p.y = ev.clientY;
+          const svgNow = p.matrixTransform(visioSvg.getScreenCTM().inverse());
+          const dxIn = (svgNow.x - svgStart.x) / 100;
+          const dyIn = -(svgNow.y - svgStart.y) / 100;
+          itemObj.x = Number(Math.max(0.4, Math.min(8.1, origX + dxIn)).toFixed(2));
+          itemObj.y = Number(Math.max(2.6, Math.min(9.4, origY + dyIn)).toFixed(2));
+          groupEl.setAttribute("transform", `translate(${(itemObj.x - origX) * 100},${-(itemObj.y - origY) * 100})`);
+        }
+        function onUp(ev) {
+          groupEl.releasePointerCapture(ev.pointerId);
+          groupEl.removeEventListener("pointermove", onMove);
+          groupEl.removeEventListener("pointerup", onUp);
+          jsonInput.value = JSON.stringify(state.currentSpec, null, 2);
+          renderPreview();
+        }
+        groupEl.addEventListener("pointermove", onMove);
+        groupEl.addEventListener("pointerup", onUp);
+      });
+    }
+
+    // Machine Rectangles (draggable)
     for (const r of pg.rectangles || []) {
+      const grp = svgEl("g");
       const w = Number(r.w) * 100, h = Number(r.h) * 100;
       const x = vx(r.x) - w / 2, y = vy(r.y) - h / 2;
-      visioSvg.appendChild(svgEl("rect", { x, y, width: w, height: h, fill: r.fill || "#ffffff", stroke: "#0f172a", "stroke-width": 1.8 }));
+      grp.appendChild(svgEl("rect", { x, y, width: w, height: h, fill: r.fill || "#ffffff", stroke: "#0f172a", "stroke-width": 1.8 }));
       if (r.label) {
         const lines = String(r.label).split("\n");
         lines.forEach((ln, i) => {
           const ly = vy(r.y) - ((lines.length - 1) * 7) + i * 14 + 4;
-          visioSvg.appendChild(svgEl("text", { x: vx(r.x), y: ly, "text-anchor": "middle", "font-size": Number(r.font_pt || 8.5) * 1.35, "font-weight": 700, fill: "#0f172a" }, ln));
+          grp.appendChild(svgEl("text", { x: vx(r.x), y: ly, "text-anchor": "middle", "font-size": Number(r.font_pt || 8.5) * 1.35, "font-weight": 700, fill: "#0f172a", "pointer-events": "none" }, ln));
         });
       }
+      makeDraggable(grp, r);
+      visioSvg.appendChild(grp);
     }
 
     // Flow Arrows
@@ -468,9 +514,9 @@ JSON SCHEMA:
       }));
     }
 
-    // Fences (Existing Black vs New Red Mesh)
+    // Fences (Existing Black, New Mesh, Polycarbonate Cyan, Sheet Metal Hatched — draggable)
     for (const f of pg.fences || []) {
-      const isEx = (f.kind || "mesh") === "existing";
+      const kind = String(f.kind || "mesh").toLowerCase().trim();
       const len = Number(f.len) * 100;
       const cx = vx(f.x), cy = vy(f.y);
       let deg = 90; // Horizontal
@@ -479,68 +525,83 @@ JSON SCHEMA:
       } else if (f.orient === "V" || f.orient === "vertical") {
         deg = 0;
       }
+      const outer = svgEl("g");
       const g = svgEl("g", { transform: `translate(${cx},${cy}) rotate(${deg})` });
-      g.appendChild(svgEl("rect", {
-        x: -5, y: -len / 2, width: 10, height: len,
-        fill: isEx ? "#cbd5e1" : "#fecaca",
-        stroke: isEx ? "#0f172a" : "#dc2626",
-        "stroke-width": 1.6
-      }));
-      visioSvg.appendChild(g);
+      const fill = kind === "existing" ? "#cbd5e1" : (kind === "polycarbonate" || kind === "lexan" ? "#22d3ee" : (kind === "sheet_metal" ? "#94a3b8" : "#fecaca"));
+      const stroke = kind === "existing" || kind === "sheet_metal" ? "#0f172a" : (kind === "polycarbonate" || kind === "lexan" ? "#0e7490" : "#dc2626");
+      g.appendChild(svgEl("rect", { x: -5, y: -len / 2, width: 10, height: len, fill, stroke, "stroke-width": 1.6 }));
+      outer.appendChild(g);
+      makeDraggable(outer, f);
+      visioSvg.appendChild(outer);
     }
 
-    // Letters (A..N)
+    // Letters (A..N — draggable)
     for (const l of pg.letters || []) {
-      visioSvg.appendChild(svgEl("text", {
+      const grp = svgEl("g");
+      grp.appendChild(svgEl("text", {
         x: vx(l.x), y: vy(l.y) + 6, "text-anchor": "middle",
         "font-size": 17, "font-weight": 800, fill: "#dc2626"
       }, String(l.char || "").toUpperCase()));
+      makeDraggable(grp, l);
+      visioSvg.appendChild(grp);
     }
 
-    // Safety Devices
+    // Safety Devices (all Omron Legend symbols — draggable)
     const deviceBadge = {
-      locking_slide_bolt: { txt: "LSB", bg: "#dc2626", fg: "#fff" },
-      lsb:                { txt: "LSB", bg: "#dc2626", fg: "#fff" },
-      locking:            { txt: "L",   bg: "#dc2626", fg: "#fff" },
-      magnetic:           { txt: "M",   bg: "#dc2626", fg: "#fff" },
-      existing_interlock: { txt: "INT", bg: "#475569", fg: "#fff" },
-      reset:              { txt: "RS",  bg: "#2563eb", fg: "#fff" },
-      rs:                 { txt: "RS",  bg: "#2563eb", fg: "#fff" },
-      access_request:     { txt: "AR",  bg: "#0284c7", fg: "#fff" },
-      ar:                 { txt: "AR",  bg: "#0284c7", fg: "#fff" },
-      reset_estop:        { txt: "AR/E",bg: "#dc2626", fg: "#fff" },
-      e_stop:             { txt: "ES",  bg: "#dc2626", fg: "#fef08a" },
-      e_stop_existing:    { txt: "ES",  bg: "#64748b", fg: "#fff" },
-      ring_guard:         { txt: "ES",  bg: "#dc2626", fg: "#fff" },
-      enabling:           { txt: "EN",  bg: "#f59e0b", fg: "#0f172a" },
-      safety_ctrl:        { txt: "SIC", bg: "#facc15", fg: "#0f172a" },
-      disconnect:         { txt: "DISC",bg: "#334155", fg: "#fff" },
-      air_lockout:        { txt: "AIR", bg: "#dc2626", fg: "#fff" },
-      frl:                { txt: "FRL", bg: "#64748b", fg: "#fff" },
-      lc_trans:           { txt: "T",   bg: "#ea580c", fg: "#fff" },
-      lc_rec:             { txt: "R",   bg: "#ea580c", fg: "#fff" },
-      lc_mirror:          { txt: "M",   bg: "#f97316", fg: "#fff" },
-      scanner_red:        { txt: "SCN", bg: "#dc2626", fg: "#fff" },
-      scanner_existing:   { txt: "SCN", bg: "#64748b", fg: "#fff" }
+      locking_slide_bolt:        { txt: "LSB",  bg: "#dc2626", fg: "#fff" },
+      lsb:                       { txt: "LSB",  bg: "#dc2626", fg: "#fff" },
+      slide_bolt_non_locking:    { txt: "SB-N", bg: "#facc15", fg: "#0f172a" },
+      locking:                   { txt: "L",    bg: "#dc2626", fg: "#fff" },
+      non_locking:               { txt: "N",    bg: "#ffffff", fg: "#dc2626" },
+      rolling_limit:             { txt: "R",    bg: "#ffffff", fg: "#dc2626" },
+      magnetic:                  { txt: "M",    bg: "#dc2626", fg: "#fff" },
+      existing_interlock:        { txt: "INT",  bg: "#475569", fg: "#fff" },
+      reset:                     { txt: "RS",   bg: "#2563eb", fg: "#fff" },
+      rs:                        { txt: "RS",   bg: "#2563eb", fg: "#fff" },
+      access_request:            { txt: "AR",   bg: "#0284c7", fg: "#fff" },
+      ar:                        { txt: "AR",   bg: "#0284c7", fg: "#fff" },
+      reset_estop:               { txt: "AR/E", bg: "#dc2626", fg: "#fff" },
+      e_stop:                    { txt: "ES",   bg: "#dc2626", fg: "#fef08a" },
+      e_stop_existing:           { txt: "ES",   bg: "#64748b", fg: "#fff" },
+      ring_guard:                { txt: "ES",   bg: "#dc2626", fg: "#fff" },
+      start_stop_estop:          { txt: "S/S-E",bg: "#e2e8f0", fg: "#b91c1c" },
+      disconnect_start_stop_estop:{ txt: "D/S/E",bg: "#fef08a", fg: "#b91c1c" },
+      disconnect_new:            { txt: "DISC", bg: "#facc15", fg: "#b91c1c" },
+      enabling:                  { txt: "EN",   bg: "#f59e0b", fg: "#0f172a" },
+      safety_ctrl:               { txt: "SIC",  bg: "#facc15", fg: "#0f172a" },
+      disconnect:                { txt: "DISC", bg: "#334155", fg: "#fff" },
+      air_lockout:               { txt: "AIR",  bg: "#dc2626", fg: "#fff" },
+      frl:                       { txt: "FRL",  bg: "#64748b", fg: "#fff" },
+      lc_trans:                  { txt: "T",    bg: "#ea580c", fg: "#fff" },
+      lc_rec:                    { txt: "R",    bg: "#ea580c", fg: "#fff" },
+      lc_mirror:                 { txt: "M",    bg: "#06b6d4", fg: "#0f172a" },
+      scanner_red:               { txt: "SCN",  bg: "#dc2626", fg: "#fff" },
+      scanner_existing:          { txt: "SCN",  bg: "#64748b", fg: "#fff" }
     };
 
     for (const d of pg.devices || []) {
       const k = String(d.type || "").toLowerCase().trim();
-      const b = deviceBadge[k] || { txt: k.slice(0, 3).toUpperCase(), bg: "#dc2626", fg: "#fff" };
+      const b = deviceBadge[k] || { txt: k.slice(0, 4).toUpperCase(), bg: "#dc2626", fg: "#fff" };
       const x = vx(d.x), y = vy(d.y);
-      visioSvg.appendChild(svgEl("rect", { x: x - 14, y: y - 10, width: 28, height: 20, rx: 4, fill: b.bg, stroke: "#0f172a", "stroke-width": 1 }));
-      visioSvg.appendChild(svgEl("text", { x, y: y + 4, "text-anchor": "middle", "font-size": 9, "font-weight": 800, fill: b.fg }, b.txt));
+      const grp = svgEl("g");
+      grp.appendChild(svgEl("rect", { x: x - 16, y: y - 10, width: 32, height: 20, rx: 4, fill: b.bg, stroke: "#0f172a", "stroke-width": 1.2 }));
+      grp.appendChild(svgEl("text", { x, y: y + 4, "text-anchor": "middle", "font-size": 8.5, "font-weight": 800, fill: b.fg, "pointer-events": "none" }, b.txt));
+      makeDraggable(grp, d);
+      visioSvg.appendChild(grp);
     }
 
-    // Labels
+    // Labels (draggable)
     for (const lb of pg.labels || []) {
+      const grp = svgEl("g");
       const lines = String(lb.text || "").split("\n");
       lines.forEach((ln, i) => {
-        visioSvg.appendChild(svgEl("text", {
+        grp.appendChild(svgEl("text", {
           x: vx(lb.x), y: vy(lb.y) + i * 11, "text-anchor": "middle",
           "font-size": Number(lb.font_pt || 7.5) * 1.3, "font-weight": 700, fill: lb.color || "#c00000"
         }, ln));
       });
+      makeDraggable(grp, lb);
+      visioSvg.appendChild(grp);
     }
 
     // Mesh Guarding & Optional Standards Box

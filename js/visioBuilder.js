@@ -167,16 +167,28 @@ window.VisioBuilder = (() => {
 
     function makeFence(f) {
       const id = newId(), len = Number(f.len);
-      const isEx = (f.kind || "mesh") === "existing";
-      const mid = isEx ? "1079" : "1078";
+      const kind = String(f.kind || "mesh").toLowerCase().trim();
       let ang = -Math.PI / 2;
       if (f.angle_deg !== undefined && f.angle_deg !== null && f.angle_deg !== "") {
         ang = Number(f.angle_deg) * Math.PI / 180;
       } else if (f.orient === "V" || f.orient === "vertical") {
         ang = 0;
       }
-      const props = makePropsXml(f.standard || "", isEx ? "Existing Guarding" : "New Mesh Guarding", f.note || "");
-      return `<Shape ID='${id}' Type='Shape' Master='${mid}' xmlns='${VISIO_NS}'><Cell N='PinX' V='${f.x}'/><Cell N='PinY' V='${f.y}'/><Cell N='Height' V='${len}'/><Cell N='LocPinY' V='${len / 2}' F='Inh'/><Cell N='Angle' V='${ang}'/><Section N='Geometry' IX='0'><Row T='LineTo' IX='3'><Cell N='Y' V='${len}' F='Inh'/></Row><Row T='LineTo' IX='4'><Cell N='Y' V='${len}' F='Inh'/></Row></Section>${props}</Shape>`;
+      // Native Omron masters for mesh (1078) and existing (1079)
+      if (kind === "mesh" || kind === "existing") {
+        const isEx = kind === "existing";
+        const mid = isEx ? "1079" : "1078";
+        const props = makePropsXml(f.standard || "", isEx ? "Existing Guarding" : "New Mesh Guarding", f.note || "");
+        return `<Shape ID='${id}' Type='Shape' Master='${mid}' xmlns='${VISIO_NS}'><Cell N='PinX' V='${f.x}'/><Cell N='PinY' V='${f.y}'/><Cell N='Height' V='${len}'/><Cell N='LocPinY' V='${len / 2}' F='Inh'/><Cell N='Angle' V='${ang}'/><Section N='Geometry' IX='0'><Row T='LineTo' IX='3'><Cell N='Y' V='${len}' F='Inh'/></Row><Row T='LineTo' IX='4'><Cell N='Y' V='${len}' F='Inh'/></Row></Section>${props}</Shape>`;
+      }
+      // Guarding Materials from Omron Legend: polycarbonate (cyan), sheet_metal (gray hatched), transparent_mesh
+      const w = 0.095;
+      const isPoly = kind === "polycarbonate" || kind === "lexan";
+      const fill = isPoly ? "#00ffff" : (kind === "sheet_metal" ? "#cbd5e1" : "#fef08a");
+      const fillPat = kind === "sheet_metal" ? "6" : "1";
+      const cat = isPoly ? "Polycarbonate Guard" : (kind === "sheet_metal" ? "Sheet Metal Guard" : "Wire Mesh Guard");
+      const props = makePropsXml(f.standard || "ANSI B11.19 / ISO 14120", cat, f.note || "");
+      return `<Shape ID='${id}' Type='Shape' LineStyle='3' FillStyle='3' TextStyle='3' xmlns='${VISIO_NS}'><Cell N='PinX' V='${f.x}'/><Cell N='PinY' V='${f.y}'/><Cell N='Width' V='${w}'/><Cell N='Height' V='${len}'/><Cell N='LocPinX' V='${w / 2}' F='Width*0.5'/><Cell N='LocPinY' V='${len / 2}' F='Height*0.5'/><Cell N='Angle' V='${ang}'/><Cell N='FillForegnd' V='${fill}'/><Cell N='FillBkgnd' V='#ffffff'/><Cell N='FillPattern' V='${fillPat}'/><Cell N='LineColor' V='#000000'/><Cell N='LineWeight' V='0.01736111' U='PT'/><Section N='Geometry' IX='0'><Row T='MoveTo' IX='1'><Cell N='X' V='0'/><Cell N='Y' V='0'/></Row><Row T='LineTo' IX='2'><Cell N='X' V='${w}'/><Cell N='Y' V='0'/></Row><Row T='LineTo' IX='3'><Cell N='X' V='${w}'/><Cell N='Y' V='${len}'/></Row><Row T='LineTo' IX='4'><Cell N='X' V='0'/><Cell N='Y' V='${len}'/></Row><Row T='LineTo' IX='5'><Cell N='X' V='0'/><Cell N='Y' V='0'/></Row></Section>${props}</Shape>`;
     }
 
     function make1D(masterId, x1, y1, x2, y2, std = "", cat = "", note = "") {
@@ -237,7 +249,23 @@ window.VisioBuilder = (() => {
           const props = makePropsXml(d.standard || cat.std, cat.cat, d.note || "");
           chunks.push(await instantiateMaster(cat.id, d.x, d.y, extra, props));
         } else {
-          chunks.push(makeTextBox(d.x, d.y, 0.55, 0.24, key.toUpperCase(), 7, "#c00000", "#fee2e2", "#c00000", 1));
+          // Extended Omron Legend symbols (Non-Locking [N], Rolling Limit [R], Slide Bolt Non-Locking, Disconnect New, Start/Stop E-Stop)
+          const extMap = {
+            non_locking:               { txt: "N",    w: 0.28, h: 0.28, fill: "#ffffff", border: "#dc2626", fg: "#000000", std: "ISO 14119 / ANSI B11.19", cat: "Non-Locking Interlock" },
+            rolling_limit:             { txt: "R",    w: 0.28, h: 0.28, fill: "#ffffff", border: "#dc2626", fg: "#000000", std: "ISO 14119 / ANSI B11.19", cat: "Rolling Limit Switch" },
+            slide_bolt_non_locking:    { txt: "SB-N", w: 0.48, h: 0.28, fill: "#fef08a", border: "#dc2626", fg: "#000000", std: "ISO 14119 / ANSI B11.19", cat: "Slide Bolt w/ Non-Locking" },
+            disconnect_new:            { txt: "DISC", w: 0.34, h: 0.34, fill: "#facc15", border: "#dc2626", fg: "#b91c1c", std: "OSHA 1910.147 / NFPA 79", cat: "New Disconnect" },
+            start_stop_estop:          { txt: "S/S-E",w: 0.56, h: 0.30, fill: "#e2e8f0", border: "#0f172a", fg: "#b91c1c", std: "ISO 13850 / NFPA 79",     cat: "Start / Stop E-Stop Station" },
+            disconnect_start_stop_estop:{ txt: "D/S/E",w: 0.68, h: 0.30, fill: "#fef08a", border: "#0f172a", fg: "#b91c1c", std: "OSHA 1910.147 / ISO 13850",cat: "Disconnect / Start Stop / E-Stop" }
+          };
+          const ext = extMap[key];
+          if (ext) {
+            const box = makeTextBox(d.x, d.y, ext.w, ext.h, ext.txt, 7.5, ext.border, ext.fill, ext.fg, 1);
+            const props = makePropsXml(d.standard || ext.std, ext.cat, d.note || "");
+            chunks.push(box.replace("</Shape>", props + "</Shape>"));
+          } else {
+            chunks.push(makeTextBox(d.x, d.y, 0.55, 0.24, key.toUpperCase(), 7, "#c00000", "#fee2e2", "#c00000", 1));
+          }
         }
       }
       for (const lb of pg.labels || []) {
