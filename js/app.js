@@ -565,10 +565,16 @@ JSON SCHEMA:
       });
     }
 
-    // Official Omron Bottom Legend Placeholder Banner
-    visioSvg.appendChild(svgEl("rect", { x: 18, y: 860, width: 814, height: 222, fill: "#f8fafc", stroke: "#0f172a", "stroke-width": 1.5 }));
-    visioSvg.appendChild(svgEl("text", { x: 425, y: 970, "text-anchor": "middle", "font-size": 14, "font-weight": 700, fill: "#475569" }, "OMRON OFFICIAL SYMBOL LEGEND"));
-    visioSvg.appendChild(svgEl("text", { x: 425, y: 994, "text-anchor": "middle", "font-size": 11, fill: "#64748b" }, "(Automatically preserved in full native detail inside the exported .vsdx file)"));
+    // Official Omron Bottom Legend Footer (real image in preview; full native Visio shapes in .vsdx)
+    visioSvg.appendChild(svgEl("image", {
+      href: "assets/omron_legend_footer.png",
+      x: 18,
+      y: 856,
+      width: 814,
+      height: 226,
+      preserveAspectRatio: "xMidYMid meet"
+    }));
+    visioSvg.appendChild(svgEl("rect", { x: 18, y: 856, width: 814, height: 226, fill: "none", stroke: "#0f172a", "stroke-width": 1.5 }));
 
     // Stats chips
     statsBar.classList.remove("hidden");
