@@ -63,6 +63,7 @@
 
   const customStdInput = $("customStdInput");
   const btnAddStd = $("btnAddStd");
+  const btnClearStds = $("btnClearStds");
   const customPills = $("customPills");
   const chkShowStdBox = $("chkShowStdBox");
 
@@ -213,6 +214,14 @@
   }
 
   btnAddStd.addEventListener("click", addCustomStandard);
+  btnClearStds.addEventListener("click", () => {
+    state.selectedStds.clear();
+    state.customStds = [];
+    chkShowStdBox.checked = false;
+    document.querySelectorAll("#ansiPills .pill, #isoPills .pill, #oshaPills .pill").forEach(b => b.classList.remove("selected"));
+    renderCustomPills();
+    if (state.currentSpec) renderPreview();
+  });
   customStdInput.addEventListener("keydown", e => {
     if (e.key === "Enter") { e.preventDefault(); addCustomStandard(); }
   });
@@ -347,9 +356,9 @@
   // =========================================================================
   function buildPrompt() {
     const stds = getSelectedStandards();
-    const stdBlock = stds.length
-      ? stds.map(s => `- ${s}`).join("\n")
-      : "- ANSI B11.0 / ISO 12100\n- ANSI B11.18\n- ANSI B11.19\n- ANSI B11.20\n- OSHA 29 CFR 1910.212";
+    const stdSection = stds.length
+      ? `5. APPLICABLE REGULATIONS SELECTED BY INSPECTOR (apply these to each fence/device "standard" field and page "standards" list):\n${stds.map(s => `- ${s}`).join("\n")}`
+      : `5. REGULATIONS: NONE SELECTED — do NOT add or invent any OSHA, ANSI, or ISO citations. Set every fence/device "standard" field to "" and set "standards": []. Focus strictly on converting the Notability drawing as-is.`;
 
     return `You are an Omron Advanced Services machine safety engineer converting a Notability safeguarding design worksheet PDF/image into a HIGH-DETAIL, ACCURATE JSON layout specification for an automated Microsoft Visio (.vsdx) builder using Omron's native Visio masters.
 
@@ -395,8 +404,7 @@ STRICT FIDELITY RULES:
    - Leave Y = 0.00 to 2.45 empty (auto-filled with Omron's bottom legend)
    - Leave Y = 9.50 to 11.0 empty (auto-filled with Omron's top header)
    - All (x, y) coordinates are the CENTER of each shape in inches.
-5. APPLICABLE REGULATIONS SELECTED BY INSPECTOR (apply these to each fence/device "standard" field and page "standards" list):
-${stdBlock}
+${stdSection}
 
 JSON SCHEMA:
 {
@@ -1014,9 +1022,11 @@ JSON SCHEMA:
     const oldTxt = btnDownloadVsdx.textContent;
     btnDownloadVsdx.textContent = "Building...";
     try {
+      const selectedStds = getSelectedStandards();
       const blob = await VisioBuilder.buildVsdxBlob(state.currentSpec, {
-        showStandardsBox: chkShowStdBox.checked,
-        selectedStandards: getSelectedStandards()
+        showStandardsBox: chkShowStdBox.checked && selectedStds.length > 0,
+        selectedStandards: selectedStds,
+        includeStandards: selectedStds.length > 0
       });
       const base = (state.currentSpec.output_name || "Omron_Safety_Layout").replace(/[\\/:*?"<>|]/g, "_");
       const a = document.createElement("a");

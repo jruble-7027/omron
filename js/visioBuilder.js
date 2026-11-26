@@ -220,7 +220,8 @@ window.VisioBuilder = (() => {
     const ctDoc = parser.parseFromString(await zip.file("[Content_Types].xml").async("string"), "application/xml");
     const basePageNode = pagesDoc.getElementsByTagName("Page")[0].cloneNode(true);
 
-    const showStdBox = options.showStandardsBox !== undefined ? options.showStandardsBox : Boolean(spec.show_standards_box);
+    const includeStds = options.includeStandards !== false;
+    const showStdBox = includeStds && (options.showStandardsBox !== undefined ? options.showStandardsBox : Boolean(spec.show_standards_box));
 
     let pageIndex = 0;
     for (const pg of spec.pages) {
@@ -246,7 +247,7 @@ window.VisioBuilder = (() => {
           if (d.angle_deg !== undefined && d.angle_deg !== null && d.angle_deg !== "") {
             extra += `<Cell N='Angle' V='${Number(d.angle_deg) * Math.PI / 180}'/>`;
           }
-          const props = makePropsXml(d.standard || cat.std, cat.cat, d.note || "");
+          const props = makePropsXml(includeStds ? (d.standard || cat.std) : "", cat.cat, d.note || "");
           chunks.push(await instantiateMaster(cat.id, d.x, d.y, extra, props));
         } else {
           // Extended Omron Legend symbols (Non-Locking [N], Rolling Limit [R], Slide Bolt Non-Locking, Disconnect New, Start/Stop E-Stop)
@@ -261,7 +262,7 @@ window.VisioBuilder = (() => {
           const ext = extMap[key];
           if (ext) {
             const box = makeTextBox(d.x, d.y, ext.w, ext.h, ext.txt, 7.5, ext.border, ext.fill, ext.fg, 1);
-            const props = makePropsXml(d.standard || ext.std, ext.cat, d.note || "");
+            const props = makePropsXml(includeStds ? (d.standard || ext.std) : "", ext.cat, d.note || "");
             chunks.push(box.replace("</Shape>", props + "</Shape>"));
           } else {
             chunks.push(makeTextBox(d.x, d.y, 0.55, 0.24, key.toUpperCase(), 7, "#c00000", "#fee2e2", "#c00000", 1));

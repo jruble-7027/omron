@@ -64,12 +64,15 @@
 
         <!-- CARD 2: STANDARDS SELECTOR (OSHA / ANSI / ISO) -->
         <div class="card">
-          <div class="card-header">
-            <span class="step-num">2</span>
-            <div>
-              <h2>Select Safety Regulations</h2>
-              <p class="hint">Tap to toggle OSHA, ANSI &amp; ISO standards applied to this drawing</p>
+          <div class="card-header" style="justify-content: space-between; align-items: center;">
+            <div style="display:flex; align-items:flex-start; gap:12px;">
+              <span class="step-num">2</span>
+              <div>
+                <h2>Select Safety Regulations</h2>
+                <p class="hint">Tap to toggle OSHA, ANSI &amp; ISO standards (or Clear All for drawing-only)</p>
+              </div>
             </div>
+            <button id="btnClearStds" type="button" class="btn btn-secondary btn-sm">Clear All</button>
           </div>
 
           <div class="std-group">
